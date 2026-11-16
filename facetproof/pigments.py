@@ -14,11 +14,14 @@ def linear_to_srgb(value):
 def validate_pigment(data):
     object_value(data)
     rgb = vector(data.get("color"), "color", low=0, high=1)
+    texture_id = data.get("texture_id")
+    require(texture_id is None or isinstance(texture_id, str), "texture_id", "texture_id must be a string reference")
     return {"name": text(data.get("name"), "name"), "color": rgb,
             "linear": [srgb_to_linear(v) for v in rgb],
             "roughness": scalar(data.get("roughness", .65), "roughness", .05, 1),
             "specular": scalar(data.get("specular", .2), "specular", 0, 1),
-            "two_sided": boolean(data.get("two_sided", False), "two_sided")}
+            "two_sided": boolean(data.get("two_sided", False), "two_sided"),
+            "texture_id": texture_id}
 
 
 class Pigments:

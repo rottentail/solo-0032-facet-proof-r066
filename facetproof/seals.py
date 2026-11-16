@@ -19,13 +19,23 @@ class Seals:
                 mesh = self.db.get(conn, placement["mesh_id"], "mesh")
                 pigment = self.db.get(conn, placement["pigment_id"], "pigment")
                 require(mesh["state"] == "usable", "retired", "Geometry retired before seal", 409)
-                closure.append({"placement": placement, "mesh": mesh["payload"],
-                                "pigment": pigment["payload"],
-                                "mesh_revision": mesh["revision"], "pigment_revision": pigment["revision"]})
+                entry = {"placement": placement, "mesh": mesh["payload"],
+                         "pigment": pigment["payload"],
+                         "mesh_revision": mesh["revision"], "pigment_revision": pigment["revision"]}
+                texture_id = pigment["payload"].get("texture_id")
+                if texture_id:
+                    texture = self.db.get(conn, texture_id, "texture")
+                    require(texture["state"] == "usable", "retired", "Texture retired before seal", 409)
+                    # The full payload, including its content-addressed PNG
+                    # descriptor, is copied into the closure. Later texture
+                    # revision or retirement cannot reach this frozen exposure.
+                    entry["texture"] = {**texture["payload"], "id": texture["id"]}
+                    entry["texture_revision"] = texture["revision"]
+                closure.append(entry)
             content = {"assembly_id": assembly_id, "assembly_revision": revision,
                        "name": obj["payload"]["name"], "closure": closure,
                        "lens": obj["payload"]["lens"], "illumination": obj["payload"]["illumination"],
-                       "format": "facet-seal-1"}
+                       "format": "facet-seal-2"}
             seal = self.db.insert(conn, identity("seal"), "seal", "frozen",
                                   {**content, "content_hash": digest(content)})
             self.db.update(conn, obj, obj["payload"], "sealed", revision)

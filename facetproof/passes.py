@@ -34,5 +34,8 @@ def serialize_passes(plan, rendered, request):
             "depth.png": encode_rgb(width, height, bytes(depth_rgb)),
             "object.png": encode_rgb(width, height, bytes(object_rgb))}, {
                 "covered_pixels": coverage, "triangles": rendered["triangles"],
-                "fragments": rendered["fragments"], "background_depth": "positive_infinity",
+                "fragments": rendered["fragments"],
+                "texture_taps": rendered.get("texture_taps", 0),
+                "texture_filter": request.get("texture_filter", "bilinear"),
+                "background_depth": "positive_infinity",
                 "depth_units": "camera_forward_distance", "byte_order": "little"}

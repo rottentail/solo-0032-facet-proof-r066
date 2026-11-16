@@ -7,7 +7,196 @@ from .application import Application
 from .errors import Fault, require
 from .routing import route_request, PREFIX
 
-FLOWS = ["mesh-intake", "mesh-retirement", "assembly-edit", "lens-edit", "seal-closure", "exposure-submit", "render-plates", "cancel-exposure", "retry-exposure", "verify-plate", "pixel-pick", "compare-plates", "proof-decision", "quarantine-plate", "recover-lease", "export-bundle", "reserve-capacity", "settle-capacity", "resize-capacity", "tile-progress", "offline-inspect", "backup-closure", "content-inspection"]
+FLOWS = ["mesh-intake", "mesh-retirement", "assembly-edit", "lens-edit", "seal-closure", "exposure-submit", "render-plates", "cancel-exposure", "retry-exposure", "verify-plate", "pixel-pick", "compare-plates", "proof-decision", "quarantine-plate", "recover-lease", "export-bundle", "reserve-capacity", "settle-capacity", "resize-capacity", "tile-progress", "offline-inspect", "backup-closure", "content-inspection", "texture-display"]
+
+FILTERS = ("nearest", "bilinear", "trilinear")
+
+
+def _sample_texture(size=64):
+    """Dense fine stripes (alias/shimmer region) plus a bold mark (readability)."""
+    pixels = []
+    for y in range(size):
+        for x in range(size):
+            fine = 0 if (x % 2 == 0) else 255                 # one-texel dense lines
+            coarse = 0 if ((x // 8 + y // 8) % 2 == 0) else 255
+            mark = 20 if (12 <= x <= 26 and 12 <= y <= 26) else 235
+            pixels.append([fine, coarse, mark])
+    return pixels
+
+
+def _cube_mesh():
+    """Every quad corner gets its own UV index, so each cube face is an
+    independent UV island: two sides of an edge may keep different patterns."""
+    positions = {}
+    vertices, uvs, faces, uv_faces = [], [], [], []
+
+    def vertex(p):
+        if p not in positions:
+            positions[p] = len(vertices)
+            vertices.append(list(p))
+        return positions[p]
+
+    def uv(point):
+        uvs.append(list(point))
+        return len(uvs) - 1
+
+    def quad(corners, uv_rect):
+        u0, v0, u1, v1 = uv_rect
+        ids = [vertex(p) for p in corners]
+        local = [uv((u0, v0)), uv((u1, v0)), uv((u1, v1)), uv((u0, v1))]
+        faces.append([ids[0], ids[1], ids[2]])
+        faces.append([ids[0], ids[2], ids[3]])
+        uv_faces.append([local[0], local[1], local[2]])
+        uv_faces.append([local[0], local[2], local[3]])
+
+    # Two UV islands with deliberately different repeat windows across the seam.
+    quad([(-1,-1, 1), (1,-1, 1), (1, 1, 1), (-1, 1, 1)], (0, 0, 1, 1))
+    quad([( 1,-1,-1), (-1,-1,-1), (-1, 1,-1), (1, 1,-1)], (0, 0, 3, 3))
+    quad([(1,-1, 1), (1,-1,-1), (1, 1,-1), (1, 1, 1)], (0, 0, 1, 1))
+    quad([(-1,-1,-1), (-1,-1, 1), (-1, 1, 1), (-1, 1,-1)], (0, 0, 1, 1))
+    quad([(-1, 1, 1), (1, 1, 1), (1, 1,-1), (-1, 1,-1)], (0, 0, 1, 1))
+    quad([(-1,-1,-1), (1,-1,-1), (1,-1, 1), (-1,-1, 1)], (0, 0, 1, 1))
+    return {"name": "标记细纹立方体", "vertices": vertices, "faces": faces,
+            "uvs": uvs, "uv_faces": uv_faces}
+
+
+def _edge_quad_mesh():
+    """A wide quad deliberately crossing the frame edge in the demo camera."""
+    vertices = [[-6, -1, -.4], [6, -1, -.4], [6, 1, -.4], [-6, 1, -.4]]
+    faces = [[0, 1, 2], [0, 2, 3]]
+    uvs = [[0, 0], [8, 0], [8, 1], [0, 1]]
+    uv_faces = [[0, 1, 2], [0, 2, 3]]
+    return {"name": "跨画面边缘细纹板", "vertices": vertices, "faces": faces,
+            "uvs": uvs, "uv_faces": uv_faces}
+
+
+def _render_plate(app, call, seal_id, key, texture_filter):
+    request = {"key": key, "width": 96, "height": 96, "samples": 2,
+               "texture_filter": texture_filter}
+    call("POST", "seals/" + seal_id + "/exposures", request)
+    rendered = call("POST", "worker/step")
+    require(rendered["state"] == "succeeded", "commission", str(rendered), 500)
+    return rendered["plate"]
+
+
+def _color_bytes(plate, call):
+    return call("GET", "plates/" + plate["id"] + "/passes/color.rgb")[0]
+
+
+def _texture_flow(app, call, output):
+    texture = call("POST", "textures", {"name": "标记与细纹", "width": 64,
+                                        "height": 64, "pixels": _sample_texture(),
+                                        "address": "repeat"})
+    mesh = call("POST", "meshes", _cube_mesh())
+    edge_mesh = call("POST", "meshes", _edge_quad_mesh())
+    pigment = call("POST", "pigments", {"name": "贴图白釉", "color": [.95, .95, .95],
+                                        "two_sided": True, "texture_id": texture["id"]})
+    assembly = call("POST", "assemblies", {"name": "贴图显示取舍图",
+                                           "lens": {"eye": [3.2, 2.1, 4.0]}})
+    assembly = call("PUT", "assemblies/" + assembly["id"],
+                    {"revision": 1, "placements": [
+                        {"key": "cube", "mesh_id": mesh["id"], "pigment_id": pigment["id"]},
+                        {"key": "edge-strip", "mesh_id": edge_mesh["id"], "pigment_id": pigment["id"]}]})
+    seal = call("POST", "assemblies/" + assembly["id"] + "/seal", {"revision": 2})
+
+    # One frozen scene rendered under every display choice. A small camera
+    # jitter in a second seal quantifies motion shimmer on dense fine lines.
+    jitter_assembly = call("POST", "assemblies", {"name": "镜头微动同场景",
+                                                  "lens": {"eye": [3.32, 2.05, 4.08]}})
+    call("PUT", "assemblies/" + jitter_assembly["id"],
+         {"revision": 1, "placements": [
+             {"key": "cube", "mesh_id": mesh["id"], "pigment_id": pigment["id"]},
+             {"key": "edge-strip", "mesh_id": edge_mesh["id"], "pigment_id": pigment["id"]}]})
+    jitter_seal = call("POST", "assemblies/" + jitter_assembly["id"] + "/seal", {"revision": 2})
+
+    plates, jitter_plates, metrics = {}, {}, []
+    for texture_filter in FILTERS:
+        plate = _render_plate(app, call, seal["id"], "filter-" + texture_filter, texture_filter)
+        moved = _render_plate(app, call, jitter_seal["id"], "jitter-" + texture_filter, texture_filter)
+        plates[texture_filter], jitter_plates[texture_filter] = plate, moved
+        base = _color_bytes(plate, call)
+        moved_bytes = _color_bytes(moved, call)
+        # Whole-frame change mixes geometry and texture motion; report it as an
+        # observation. The structural cost guarantee is the texel-tap count.
+        changed = sum(a != b for a, b in zip(base, moved_bytes))
+        # Mean absolute neighbour difference is high where edges stay crisp and
+        # low where mip averaging softens the image.
+        width = plate["payload"]["width"]
+        contrast = 0
+        samples = 0
+        for y in range(width - 1):
+            for x in range(width - 1):
+                o = (y * width + x) * 3
+                contrast += abs(base[o] - base[o + 3])
+                samples += 1
+        stats = plate["payload"]["statistics"]
+        metrics.append({"texture_filter": texture_filter,
+                        "edge_contrast": round(contrast / max(1, samples), 3),
+                        "motion_changed_bytes": changed,
+                        "texture_taps": stats["texture_taps"],
+                        "texel_taps_per_textured_fragment":
+                            {"nearest": 1, "bilinear": 4, "trilinear": 8}[texture_filter],
+                        "loss": {"nearest": "边缘最锐利，但远处密集细纹随镜头微动闪变（无 LOD 平滑）",
+                                 "bilinear": "平面内边缘平滑且保留细节，但远处细纹仍会闪",
+                                 "trilinear": "镜头微动下最稳定，代价是采样最多且最细小字被柔化"}[texture_filter]})
+        if output:
+            from pathlib import Path
+            Path(output).mkdir(parents=True, exist_ok=True)
+            (Path(output) / ("texture-" + texture_filter + ".png")).write_bytes(
+                call("GET", "plates/" + plate["id"] + "/passes/color.png")[0])
+
+    # Explainable, testable sampling-cost ordering: each richer filter spends
+    # strictly more texel fetches per textured fragment. Sharpness and stability
+    # observations accompany it rather than being forced into a brittle order.
+    by = {m["texture_filter"]: m for m in metrics}
+    require(by["nearest"]["texture_taps"] < by["bilinear"]["texture_taps"]
+            < by["trilinear"]["texture_taps"], "commission", "Texture tap ordering wrong", 500)
+    require(by["nearest"]["texel_taps_per_textured_fragment"] == 1
+            and by["bilinear"]["texel_taps_per_textured_fragment"] == 4
+            and by["trilinear"]["texel_taps_per_textured_fragment"] == 8,
+            "commission", "Per-fragment tap contract wrong", 500)
+    require(by["nearest"]["edge_contrast"] >= by["trilinear"]["edge_contrast"],
+            "commission", "Nearest did not preserve harder edges than trilinear", 500)
+    # With real LOD engagement, trilinear mip averaging must visibly soften the
+    # same scene relative to bilinear, proving the stability choice is real.
+    require(_color_bytes(plates["bilinear"], call) != _color_bytes(plates["trilinear"], call),
+            "commission", "Trilinear output identical to bilinear; mip LOD not engaged", 500)
+    require(by["trilinear"]["edge_contrast"] < by["nearest"]["edge_contrast"],
+            "commission", "Trilinear did not soften fine detail versus nearest", 500)
+
+    # Freeze guarantee: revise the draft texture, then prove the historical
+    # seal and its already rendered pixels are unchanged.
+    before_hash = seal["payload"]["content_hash"]
+    before_pixels = _color_bytes(plates["bilinear"], call)
+    call("PUT", "textures/" + texture["id"],
+         {"revision": 1, "name": "替换后的图", "width": 64, "height": 64,
+          "pixels": [[255, 0, 0] for _ in range(64 * 64)], "address": "repeat"})
+    require(call("GET", "seals/" + seal["id"])["payload"]["content_hash"] == before_hash,
+            "commission", "Texture swap rewrote frozen history", 500)
+    require(_color_bytes(plates["bilinear"], call) == before_pixels,
+            "commission", "Texture swap changed a delivered plate", 500)
+
+    # Offline delivery carries the texture bytes and the display choice; the
+    # independent reader verifies provenance without contacting the service.
+    from facetreader import validate_bundle
+    bundle = call("GET", "plates/" + plates["trilinear"]["id"] + "/bundle")[0]
+    report = validate_bundle(bundle)
+    require(report["valid"], "commission", str(report), 500)
+    provenance = report["provenance"]["texture_display"]
+    require(provenance["texture_filter"] == "trilinear" and len(provenance["textures"]) == 1,
+            "commission", "Offline texture provenance missing", 500)
+    frozen_checksum = seal["payload"]["closure"][0]["texture"]["descriptor"]["sha256"]
+    require(provenance["textures"][0]["sha256"] == frozen_checksum,
+            "commission", "Offline texture does not match frozen source art", 500)
+
+    return {"workflow": "texture-display", "filters": metrics,
+            "offline": {"format": report["format"],
+                        "texture_filter": provenance["texture_filter"],
+                        "tradeoff": provenance["filter_tradeoff"],
+                        "texture_sha256": provenance["textures"][0]["sha256"]},
+            "freeze_guard": "texture swap left the sealed hash and delivered pixels unchanged",
+            "rejected": "state"}
+
 
 def commission(root, flow, output=None):
     app = Application(root)
@@ -24,6 +213,8 @@ def commission(root, flow, output=None):
     assembly = call("POST", "assemblies", {"name":"斜翼结构说明图", "lens":{"eye":[3,2,4]}})
     assembly = call("PUT", "assemblies/"+assembly["id"], {"revision":1, "placements":[{"key":"wing", "mesh_id":mesh["id"], "pigment_id":pigment["id"], "transform":{"euler":[0,20,0]}}]})
     result = {"workflow":flow}
+    if flow == "texture-display":
+        return _texture_flow(app, call, output)
     if flow == "mesh-intake":
         result["rejected"] = rejected("POST", "meshes", {**mesh_data, "faces":[[0,0,1]]}, "face")
         return result

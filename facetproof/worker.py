@@ -36,10 +36,23 @@ class Worker:
             for name, data in passes.items():
                 checkpoint()
                 descriptors[name] = self.blobs.put(data)
-            payload = {"format": "facet-plate-1", "seal_id": exposure["seal_id"],
+            textures = {}
+            for entry in seal["closure"]:
+                if entry.get("texture"):
+                    textures[entry["texture"]["id"]] = {
+                        "texture_id": entry["texture"]["id"],
+                        "revision": entry["texture_revision"],
+                        "name": entry["texture"]["name"],
+                        "address": entry["texture"]["address"],
+                        "width": entry["texture"]["width"], "height": entry["texture"]["height"],
+                        "descriptor": entry["texture"]["descriptor"]}
+            textures = [textures[texture_id] for texture_id in sorted(textures)]
+            payload = {"format": "facet-plate-2", "seal_id": exposure["seal_id"],
                        "seal_hash": seal["content_hash"], "request": exposure["request"],
                        "width": exposure["request"]["width"], "height": exposure["request"]["height"],
                        "lens_hash": plan["lens_hash"], "objects": plan["objects"],
+                       "texture_filter": exposure["request"]["texture_filter"],
+                       "textures": textures,
                        "passes": descriptors, "statistics": statistics,
                        "visual_hash": digest(descriptors)}
             self.exposures.heartbeat(exposure["id"], exposure["token"])

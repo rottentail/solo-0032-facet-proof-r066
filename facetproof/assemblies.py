@@ -44,6 +44,12 @@ class Assemblies:
                     mesh = self.db.get(conn, placement.get("mesh_id"), "mesh")
                     pigment = self.db.get(conn, placement.get("pigment_id"), "pigment")
                     require(mesh["state"] == "usable", "retired", "Cannot place retired geometry", 409)
+                    texture_id = pigment["payload"].get("texture_id")
+                    if texture_id:
+                        texture = self.db.get(conn, texture_id, "texture")
+                        require(texture["state"] == "usable", "retired", "Cannot place a retired texture", 409)
+                        require("uvs" in mesh["payload"] and "uv_faces" in mesh["payload"],
+                                "uv", "A textured pigment requires per-corner mesh UVs")
                     transform = placement.get("transform", {})
                     object_value(transform, "transform")
                     clean.append({"key": label, "mesh_id": mesh["id"], "pigment_id": pigment["id"],

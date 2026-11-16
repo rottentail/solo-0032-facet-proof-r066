@@ -289,6 +289,22 @@ class Maintenance:
                 source = {**{k: v for k, v in descriptor.items() if k not in {"sha256", "size"}}, "kind": "tile_checkpoint"}
                 self._merge_reference(refs, descriptor, source)
                 tile_count += 1
+        # Textures are embedded in the frozen seal payload rather than a plate
+        # channel; their content-addressed PNG bytes must still be backed up.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='objects'").fetchone():
+            for row in conn.execute("SELECT id,payload FROM objects WHERE kind='seal' ORDER BY id").fetchall():
+                try:
+                    seal = parse_json(row["payload"])
+                except Fault as exc:
+                    raise Fault("backup_reference", "Seal metadata is invalid", 409) from exc
+                for entry in seal.get("closure", []):
+                    texture = entry.get("texture") if isinstance(entry, dict) else None
+                    if not texture:
+                        continue
+                    descriptor = texture.get("descriptor")
+                    self._merge_reference(refs, descriptor,
+                                          {"kind": "seal_texture", "seal_id": row["id"],
+                                           "texture_id": texture.get("id")})
         for item in refs.values():
             item["sources"].sort(key=canonical)
         return {"references": [refs[key] for key in sorted(refs)], "plate_count": len(rows),

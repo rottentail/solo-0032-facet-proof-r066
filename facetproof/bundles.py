@@ -16,6 +16,12 @@ class Bundles:
                        "seal.json": canonical(seal).encode()}
             for name, descriptor in plate["payload"]["passes"].items():
                 members["passes/" + name] = self.blobs.read(descriptor["sha256"])
+            # Texture images and the chosen display filter travel with the
+            # plate, so an offline receiver can verify the exact source art
+            # without the originating service.
+            for texture in plate["payload"].get("textures", []):
+                descriptor = texture["descriptor"]
+                members["textures/" + descriptor["sha256"] + ".png"] = self.blobs.read(descriptor["sha256"])
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for name, raw in sorted(members.items()):

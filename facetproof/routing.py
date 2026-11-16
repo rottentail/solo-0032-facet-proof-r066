@@ -23,6 +23,7 @@ def route_request(app, method, target, data=None):
         if method == 'GET' and p[3] == 'verify': return app.maintenance.verify_backup(p[2])
     if method == "POST" and p == ["meshes"]: return app.meshes.create(data)
     if method == "POST" and p == ["pigments"]: return app.pigments.create(data)
+    if method == "POST" and p == ["textures"]: return app.textures.create(data)
     if method == "POST" and p == ["assemblies"]: return app.assemblies.create(data)
     if method == "POST" and p == ["comparisons"]: return app.comparisons.create(data)
     if method == "POST" and p == ["worker", "step"]: return app.worker.run_one()
@@ -33,15 +34,19 @@ def route_request(app, method, target, data=None):
         if method == "GET" and group == "plates": return app.plates.get(ident)
         if method == "GET" and group == "proofs": return app.proofs.get(ident)
         if method == "PUT" and group == "assemblies": return app.assemblies.revise(ident, data)
+        if method == "PUT" and group == "textures":
+            require("revision" in data, "revision", "Expected revision is required")
+            return app.textures.revise(ident, data)
         if method == "PUT" and group == "pigments":
             require("revision" in data, "revision", "Expected revision is required")
             return app.pigments.revise(ident, data)
-        if method == "GET" and group in {"meshes", "pigments", "assemblies", "seals", "comparisons"}:
-            kind = {"meshes":"mesh", "pigments":"pigment", "assemblies":"assembly", "seals":"seal", "comparisons":"comparison"}[group]
+        if method == "GET" and group in {"meshes", "pigments", "textures", "assemblies", "seals", "comparisons"}:
+            kind = {"meshes":"mesh", "pigments":"pigment", "textures":"texture", "assemblies":"assembly", "seals":"seal", "comparisons":"comparison"}[group]
             with app.db.unit_of_work() as conn: return app.db.get(conn, ident, kind)
     if len(p) == 3:
         group, ident, action = p
         if method == "POST" and group == "meshes" and action == "retire": return app.meshes.retire(ident, data.get("revision"))
+        if method == "POST" and group == "textures" and action == "retire": return app.textures.retire(ident, data.get("revision"))
         if method == "POST" and group == "assemblies" and action == "seal": return app.seals.create(ident, data.get("revision"))
         if method == "POST" and group == "assemblies" and action == "fork": return app.assemblies.fork(ident, data.get("name"))
         if method == "POST" and group == "seals" and action == "exposures": return app.exposures.submit(ident, data)

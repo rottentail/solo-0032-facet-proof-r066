@@ -2,6 +2,7 @@ from .database import Database
 from .blobs import Blobs
 from .meshes import Meshes
 from .pigments import Pigments
+from .textures import Textures
 from .assemblies import Assemblies
 from .seals import Seals
 from .exposures import Exposures
@@ -19,6 +20,7 @@ class Application:
         self.blobs = Blobs(root)
         self.meshes = Meshes(self.db)
         self.pigments = Pigments(self.db)
+        self.textures = Textures(self.db, self.blobs)
         self.assemblies = Assemblies(self.db)
         self.seals = Seals(self.db)
         self.resources = ResourceBudget(self.db)
@@ -33,4 +35,4 @@ class Application:
 
     def health(self):
         with self.db.unit_of_work() as conn:
-            return {"integrity": conn.execute("PRAGMA quick_check").fetchone()[0], "renderer": "facet-raster-1"}
+            return {"integrity": conn.execute("PRAGMA quick_check").fetchone()[0], "renderer": "facet-raster-2"}

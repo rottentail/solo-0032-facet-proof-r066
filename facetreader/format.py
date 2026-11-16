@@ -14,6 +14,20 @@ TRUST = {
     "review_validity": "Unknown: the ZIP contains no proof records or live quarantine state",
     "render_correctness": "Not established: channels are decoded and cross-checked, not independently re-rendered",
 }
+SUPPORTED_PLATE = {"facet-plate-1", "facet-plate-2"}
+SUPPORTED_SEAL = {"facet-seal-1", "facet-seal-2"}
+TEXTURE_FILTERS = {"nearest", "bilinear", "trilinear"}
+FILTER_TRADEOFF = {
+    "nearest": {"texel_taps_per_textured_fragment": 1,
+                "edge_sharpness": "highest", "motion_stability": "lowest",
+                "loss": "dense fine lines alias and shimmer under small camera motion"},
+    "bilinear": {"texel_taps_per_textured_fragment": 4,
+                 "edge_sharpness": "high", "motion_stability": "medium",
+                 "loss": "in-plane edges are smooth but distant fine lines still alias"},
+    "trilinear": {"texel_taps_per_textured_fragment": 8,
+                  "edge_sharpness": "softened", "motion_stability": "highest",
+                  "loss": "mip averaging blurs the finest detail at grazing or distant angles"},
+}
 
 
 def _object(value, field):
@@ -91,13 +105,56 @@ def _objects(seal, objects):
     return expected
 
 
+def _textures(payload, frozen, members, plate_format, request):
+    """Verify embedded source art and the display choice against real bytes."""
+    textures = payload.get("textures", [])
+    texture_filter = payload.get("texture_filter")
+    if plate_format == "facet-plate-1":
+        require(textures == [] and texture_filter is None,
+                "texture", "Version-one plates cannot carry texture data")
+        return {"textures": [], "texture_filter": None}
+    require(isinstance(textures, list) and len(textures) <= 16, "texture", "Invalid texture manifest")
+    require(texture_filter in TEXTURE_FILTERS, "texture_filter", "Unknown or missing texture filter")
+    require(request.get("texture_filter") == texture_filter,
+            "texture_filter", "Request and plate disagree on the display choice")
+    frozen_by_id = {entry["texture"]["id"]: entry
+                    for entry in frozen.get("closure", []) if entry.get("texture")}
+    verified = []
+    for texture in textures:
+        texture = _object(texture, "plate texture")
+        texture_id = _text(texture.get("texture_id"), "texture.texture_id")
+        descriptor = _object(texture.get("descriptor"), "texture.descriptor")
+        require(set(descriptor) == {"sha256", "size"}, "descriptor", "Unexpected texture descriptor fields")
+        checksum = _checksum(descriptor.get("sha256"), "texture.descriptor.sha256")
+        member_name = "textures/" + checksum + ".png"
+        require(member_name in members, "texture", "Bundle is missing a referenced texture image")
+        image = members[member_name]
+        require(len(image) == descriptor["size"], "texture", "Texture size mismatch")
+        require(hashlib.sha256(image).hexdigest() == checksum, "texture", "Texture checksum mismatch")
+        # The frozen seal must be the provenance of every delivered texture.
+        require(texture_id in frozen_by_id, "texture", "Texture absent from the frozen seal closure")
+        frozen_entry = frozen_by_id[texture_id]
+        require(frozen_entry["texture"]["descriptor"]["sha256"] == checksum,
+                "texture", "Delivered texture differs from the frozen source art")
+        verified.append({"texture_id": texture_id, "name": texture.get("name"),
+                         "revision": _integer(texture.get("revision"), 1, 2**63-2, "texture.revision"),
+                         "width": _integer(texture.get("width"), 1, MAX_SIDE, "texture.width"),
+                         "height": _integer(texture.get("height"), 1, MAX_SIDE, "texture.height"),
+                         "address": _text(texture.get("address"), "texture.address"),
+                         "sha256": checksum})
+    return {"textures": verified, "texture_filter": texture_filter,
+            "filter_tradeoff": FILTER_TRADEOFF[texture_filter]}
+
+
 def evaluate(raw):
     members = read_members(raw)
     plate = _json(members["plate.json"], "plate.json")
     seal = _json(members["seal.json"], "seal.json")
     payload = _object(plate.get("payload"), "plate.payload")
     frozen = _object(seal.get("payload"), "seal.payload")
-    require(payload.get("format") == "facet-plate-1" and frozen.get("format") == "facet-seal-1",
+    plate_format = payload.get("format")
+    seal_format = frozen.get("format")
+    require(plate_format in SUPPORTED_PLATE and seal_format in SUPPORTED_SEAL,
             "format", "Unsupported plate or seal format")
     require(plate.get("state") == "ready" and seal.get("kind") == "seal"
             and seal.get("state") == "frozen", "metadata_state", "Unexpected embedded plate or seal state")
@@ -137,6 +194,7 @@ def evaluate(raw):
             require(size == width * height * stride, "extent", "Raw channel extent mismatch: " + name)
     require(_checksum(payload.get("visual_hash"), "visual_hash") == _digest(descriptors),
             "visual_hash", "Channel manifest checksum mismatch")
+    texture_report = _textures(payload, frozen, members, plate_format, request)
     decoded = {name: decode_rgb(members["passes/" + name], width, height)
                for name in ("color.png", "depth.png", "object.png")}
     require(decoded["color.png"] == members["passes/color.rgb"],
@@ -181,15 +239,23 @@ def evaluate(raw):
             "channel_semantics", "Unexpected raw-channel interpretation")
     require(type(statistics.get("covered_pixels")) is int and statistics["covered_pixels"] == covered,
             "coverage", "Coverage count disagrees with the identifier channel")
+    if plate_format == "facet-plate-2":
+        require(statistics.get("texture_filter") == texture_report["texture_filter"],
+                "texture_filter", "Statistics disagree with the recorded display choice")
+        taps = statistics.get("texture_taps")
+        require(type(taps) is int and taps >= 0, "texture_taps", "Texture tap accounting is invalid")
     report = {
-        "valid": True, "format": "facet-plate-1",
+        "valid": True, "format": plate_format,
         "summary": {"width": width, "height": height, "samples": samples,
                     "covered_pixels": covered, "background_pixels": background,
                     "objects": len(objects), "finite_depth_range": [minimum, maximum] if covered else None,
-                    "depth_units": "camera_forward_distance", "object_id_scope": "local_to_this_plate"},
+                    "depth_units": "camera_forward_distance", "object_id_scope": "local_to_this_plate",
+                    "texture_filter": texture_report["texture_filter"],
+                    "textures": len(texture_report["textures"])},
         "provenance": {"plate_id": plate_id, "exposure_id": exposure_id, "seal_id": seal_id,
                        "seal_hash": content_hash, "lens_hash": payload["lens_hash"],
                        "visual_hash": payload["visual_hash"], "renderer": request["renderer"],
+                       "texture_display": texture_report,
                        "assembly_id": _text(frozen.get("assembly_id"), "assembly_id"),
                        "assembly_revision": _integer(frozen.get("assembly_revision"), 1, 2**63-2, "assembly_revision"),
                        "objects": objects,

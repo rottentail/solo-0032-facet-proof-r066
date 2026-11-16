@@ -104,10 +104,12 @@ def encode(rendered, bounds, expected_fingerprint, blobs):
     _samples(depth, colors, ids, pixels)
     fragments = integer(rendered["fragments"], "tile fragments", 0, 2**63 - 1)
     triangles = integer(rendered["triangles"], "tile triangles", 0, 2**63 - 1)
+    texture_taps = integer(rendered.get("texture_taps", 0), "tile texture taps", 0, 2**63 - 1)
     raw = {"depth.f64": _raw(depth, "d", 8), "color.f32": _raw(colors, "f", 4),
            "object.u32": _raw(ids, "I", 4)}
     return {"format": TILE_FORMAT, "byte_order": "little", "bounds": list(bounds),
             "fingerprint": expected_fingerprint, "fragments": fragments, "triangles": triangles,
+            "texture_taps": texture_taps,
             "channels": {name: blobs.put(data) for name, data in raw.items()}}
 
 
@@ -129,6 +131,8 @@ def descriptors(payload, bounds, expected_fingerprint):
                 "tile_extent", "Tile descriptor does not match its channel extent", 409)
     integer(payload.get("fragments"), "tile fragments", 0, 2**63 - 1)
     integer(payload.get("triangles"), "tile triangles", 0, 2**63 - 1)
+    if payload.get("texture_taps") is not None:
+        integer(payload.get("texture_taps"), "tile texture taps", 0, 2**63 - 1)
     return channels
 
 
@@ -144,8 +148,10 @@ def decode(payload, bounds, expected_fingerprint, blobs, objects=None):
     _samples(decoded["depth.f64"], decoded["color.f32"], decoded["object.u32"], pixels, objects)
     fragments = integer(payload.get("fragments"), "tile fragments", 0, 2**63 - 1)
     triangles = integer(payload.get("triangles"), "tile triangles", 0, 2**63 - 1)
+    texture_taps = integer(payload.get("texture_taps", 0), "tile texture taps", 0, 2**63 - 1)
     return {"depth": decoded["depth.f64"], "colors": decoded["color.f32"],
-            "ids": decoded["object.u32"], "fragments": fragments, "triangles": triangles}
+            "ids": decoded["object.u32"], "fragments": fragments, "triangles": triangles,
+            "texture_taps": texture_taps}
 
 
 def assemble(plan, records, edge, expected_fingerprint, blobs, checkpoint):
@@ -157,6 +163,7 @@ def assemble(plan, records, edge, expected_fingerprint, blobs, checkpoint):
     ids = array("I", [0]) * (width * height)
     colors = array("f", [0.]) * (width * height * 3)
     fragments = 0
+    texture_taps = 0
     for record in sorted(records, key=lambda value: value["ordinal"]):
         checkpoint()
         x0, y0, x1, y1 = record["bounds"]
@@ -171,6 +178,8 @@ def assemble(plan, records, edge, expected_fingerprint, blobs, checkpoint):
             ids[target:target + local_width] = tile["ids"][source:source + local_width]
             colors[target * 3:(target + local_width) * 3] = tile["colors"][source * 3:(source + local_width) * 3]
         fragments += tile["fragments"]
+        texture_taps += tile.get("texture_taps", 0)
     checkpoint()
     return {"depth": depth, "ids": ids, "colors": colors,
-            "fragments": fragments, "triangles": len(plan["triangles"])}
+            "fragments": fragments, "texture_taps": texture_taps,
+            "triangles": len(plan["triangles"])}
